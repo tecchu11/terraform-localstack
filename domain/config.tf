@@ -1,9 +1,9 @@
 terraform {
-  required_version = "1.6.3"
+  required_version = "1.7.1"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "5.23.1"
+      version = "5.34.0"
     }
   }
   backend "s3" {
@@ -11,6 +11,7 @@ terraform {
     force_path_style            = false
     skip_credentials_validation = true
     skip_metadata_api_check     = true
+    skip_requesting_account_id  = true
     bucket                      = "terraform-backend"
     key                         = "terraform.tfstate"
     endpoint                    = "http://s3.localhost.localstack.cloud:4566"
