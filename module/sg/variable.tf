@@ -29,7 +29,7 @@ variable "ingress_rules" {
     to_port                      = number
   }))
   description = "(Optional) Ingress rules for this security group. See https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc_security_group_ingress_rule"
-  default = {}
+  default     = {}
 }
 
 variable "egress_rules" {
@@ -45,5 +45,5 @@ variable "egress_rules" {
     to_port                      = number
   }))
   description = "(Optional) Egress rules for this security group. See https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc_security_group_egress_rule"
-  default = {}
+  default     = {}
 }

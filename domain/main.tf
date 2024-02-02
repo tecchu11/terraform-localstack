@@ -1,9 +1,8 @@
 module "sg" {
-  source          = "../module/sg"
-  description     = "sample sg"
-  name            = "sample-sg"
-  vpc_id          = "sample-vpc-id"
-  attache_ingress = true
+  source      = "../module/sg"
+  description = "sample sg"
+  name        = "sample-sg"
+  vpc_id      = "sample-vpc-id"
   ingress_rules = {
     sample = {
       cidr_ipv4   = "0.0.0.0/0"
