@@ -18,8 +18,8 @@
 | H5 | 外部デプロイ後も `terraform plan` がクリーン | ✅ `No changes.` |
 | H6 | overlay 切り替えに Terraform 出力が追随 | ✅ |
 
-ただし Floci には 2 つの再現性のある忠実性ギャップがあり、それを回避するための
-**Floci 専用の記述が `infra/ecs.tf` に 2 箇所ある**（後述）。実 AWS では不要。
+ただし Floci には 3 つの再現性のある忠実性ギャップがあり、うち 2 つを回避するための
+**Floci 専用の記述が `infra/ecs.tf` にある**（後述）。実 AWS では不要。
 
 ## 再検証のしかた
 
@@ -62,7 +62,7 @@ state はこのディレクトリ配下のローカルファイル。`domain/` �
 `DescribeTaskDefinition` は family 名だけで最新 active リビジョンを解決できた
 （リビジョン付きにフォールバックする必要はなかった）。
 
-## Floci の忠実性ギャップ 2 件
+## Floci の忠実性ギャップ 3 件
 
 ### (1) `taskDefinition` を正規化せずエコーバックする → provider が panic
 
@@ -103,6 +103,25 @@ apply 直後の plan が `Plan: 1 to add, 0 to change, 1 to destroy`（強制再
 
 > この 2 件は Floci の実装差であって、検証対象の設計の問題ではない。
 > ただし (2) を潰さないと H5 の「plan がクリーン」を測れないため、切り分けとして必要だった。
+
+### (3) `containerDefinitions` を round-trip しない → H5 の測定を歪める
+
+`RegisterTaskDefinition` に渡した内容が `DescribeTaskDefinition` でそのまま返らない。
+**`logConfiguration` が丸ごと消え、`portMappings` に `hostPort: 0` が生える。**
+
+| 送った内容 | 返ってくる内容 |
+|-----------|---------------|
+| `logConfiguration: {logDriver: awslogs, options: {...}}` | （消える） |
+| `portMappings: [{containerPort: 80, protocol: tcp}]` | `[{containerPort: 80, hostPort: 0, protocol: tcp}]` |
+
+結果、`ignore_changes` から `container_definitions` を外すと
+**初回 apply 直後の plan からタスク定義が再作成対象になる**（`Plan: 1 to add, 1 to destroy`）。
+
+これは H5 の測定にとって重要な限界で、正直に書いておく。
+`ignore_changes = [container_definitions]` は本来「CI がリビジョンを持つ」という
+設計意図のために置いているものだが、**Floci 上ではこのエミュレータのバグも同時に
+隠してしまう**。したがって「H5 の plan がクリーンなのは設計が成立しているからだ」と
+Floci だけで言い切ることはできない。実 AWS での確認が必要。
 
 ## `tf-view.jsonnet` に必要だった調整
 
@@ -252,16 +271,19 @@ $ terraform plan -var env=dev
 Plan: 7 to add, 0 to change, 7 to destroy.
 ```
 
-`cpu` / `memory` が `ignore_changes` に入っているのに差分として出るのは、
-`family` 変更でリソース自体が置換されるため。置換時は `ignore_changes` は効かない。
+`cpu` / `memory` は `ignore_changes` に入れていない。Floci はこの 2 つは
+正しく round-trip するため、入れなくても plan はクリーンなままだった。
 
 ## 設計上気づいた点
 
-1. **`ignore_changes` の `cpu` / `memory` は再考の余地がある。**
-   `container_definitions` と違い cpu/memory は CI がリビジョンを登録し直せば
-   タスク定義側で更新される一方、Terraform state は初回値のまま固定される。
-   置換が起きた瞬間（family 変更など）に jsonnet の現在値へ飛ぶので、
-   「普段は無視、置換時だけ追随」という挙動になる。意図的ならよいが直感には反する。
+1. **Terraform がタスク定義を持つ意味は「リビジョン 1 の存在保証」だけ。**
+   新規環境では `data.aws_ecs_task_definition.latest` が解決できず
+   `aws_ecs_service` を作れないため、Terraform がリビジョン 1 を登録することで
+   1 回の apply が完結する（H1 / H4）。逆に言えばそれ以降 Terraform の state は
+   リビジョン 1 に固定され、実稼働のリビジョン N と永久に乖離する。
+   **CI が Terraform より先に必ず登録する運用なら、`aws_ecs_task_definition`
+   リソース自体を削除して data source だけ残す方が筋が良い。**
+   その場合 H1 の「apply 一発」は失われ、ブートストラップが 2 段階になる。
 
 2. **`data.aws_ecs_task_definition.latest` は plan の度に外部状態を読む。**
    CI がデプロイした直後に plan すると service の `task_definition` が

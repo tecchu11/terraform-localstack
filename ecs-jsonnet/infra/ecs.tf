@@ -42,7 +42,7 @@ resource "aws_ecs_task_definition" "app" {
   container_definitions    = data.external.taskdef.result.containerDefinitions
 
   lifecycle {
-    ignore_changes = [container_definitions, cpu, memory]
+    ignore_changes = [container_definitions]
   }
 
   depends_on = [aws_cloudwatch_log_group.nginx]
