@@ -126,10 +126,10 @@ Floci だけで言い切ることはできない。実 AWS での確認が必要
 ## `tf-view.jsonnet` に必要だった調整
 
 `data "external"` は「トップレベルがオブジェクトで全ての値が文字列」の JSON しか
-受け取れない。計画書の案（`containerDefinitions` だけ潰す）は**そのまま動いた**が、
-1 点だけ設計上の穴があったので拡張した。
+受け取れない。計画書の案（`containerDefinitions` だけ潰す）はそのまま動いたが、
+項目を手で列挙する形だったため、次の穴があった。
 
-### 見つかった穴: 最上位フィールドの手書きコピーが残っていた
+### 見つかった穴: 手で列挙すると載せ忘れに気づけない
 
 計画書の `tf-view.jsonnet` は `family` / `cpu` / `memory` / `containerDefinitions`
 しか出力しない。そのため `networkMode` と `requiresCompatibilities` が
@@ -140,30 +140,44 @@ network_mode             = "awsvpc"       # ← base.libsonnet と二重管理
 requires_compatibilities = ["FARGATE"]    # ← 同上
 ```
 
-**これは「`.tf` からコピーを無くす」という設計目的に対する取りこぼし。**
-`base.libsonnet` の `networkMode` を変えても Terraform 側は追随せず、
-Terraform が作る初回リビジョンと CI が作るリビジョンが食い違う。
+「`.tf` からコピーを無くす」という設計目的に対する取りこぼしである。しかも
+載せ忘れても何も起きないので、指摘されるまで気づけない。
 
-対処: 配列も JSON 文字列として渡し、Terraform 側で `jsondecode()` する。
+### 対処: view を手で書かず `taskdef.jsonnet` から機械導出する
+
+文字列はそのまま、それ以外は `std.manifestJsonEx` で JSON 文字列に潰す。
 これで `map(string)` 制約を満たしたまま非スカラーを運べる。
+列挙しないので、項目の載せ忘れという事象自体が起こらない。
 
 ```jsonnet
+local td = import 'taskdef.jsonnet';
 {
-  family: td.family,
-  cpu: td.cpu,
-  memory: td.memory,
-  networkMode: td.networkMode,
-  requiresCompatibilities: std.manifestJsonEx(td.requiresCompatibilities, ''),
-  containerDefinitions: std.manifestJsonEx(td.containerDefinitions, ''),
+  [k]: if std.isString(td[k]) then td[k] else std.manifestJsonEx(td[k], '')
+  for k in std.objectFields(td)
 }
 ```
+
+Terraform 側は必要なキーを名前で読み、非スカラーは `jsondecode()` で戻す。
 
 ```hcl
 network_mode             = data.external.taskdef.result.networkMode
 requires_compatibilities = jsondecode(data.external.taskdef.result.requiresCompatibilities)
 ```
 
-この形なら `ephemeral_storage` や `volume` など他の非スカラー項目も同じ手口で足せる。
+型ごとの変換結果は次のとおり。
+
+| `taskdef.jsonnet` の値 | view の値 |
+|---|---|
+| `"awsvpc"` | `"awsvpc"` |
+| `21` | `"21"` |
+| `true` | `"true"` |
+| `null` | `"null"` |
+| `["FARGATE"]` | `"[\n\"FARGATE\"\n]"` |
+| オブジェクト | JSON 文字列 |
+
+`ephemeral_storage` や `volume` を `base.libsonnet` に足した場合も、view には
+自動で載る。ただし **`ecs.tf` に対応する属性を書き足す作業は手作業のまま残る**
+（後述の「設計上気づいた点」を参照）。
 
 ## 各 Phase の実測
 
@@ -302,18 +316,29 @@ env ごとに state を分ければ overlay の値はそのまま反映される
    これは計画書が想定している状態であり、無視される対象が「手書きコピー」ではなく
    「同一ソースの射影」になっている点が要点。
 
-2. **`execRoleArn` プレースホルダは今の `tf-view.jsonnet` では露出しない。**
-   `executionRoleArn` を view に含めていないため、`--ext-str execRoleArn=placeholder`
-   の値は Terraform 側に一切漏れない。もし将来 view に含めるなら、
-   リソース参照を渡すことになり `data "external"` の読み取りが apply まで遅延し、
-   H1 の「plan で中身が見える」性質を失う。含めないままが良い。
+2. **view の `executionRoleArn` は読んではいけない。**
+   機械導出にしたことで `executionRoleArn` も view に載るようになったが、
+   その値は `--ext-str execRoleArn=placeholder` で渡したプレースホルダである。
+   `ecs.tf` は意図的にこのキーを読まず、`aws_iam_role.task_execution.arn` を使う。
 
-3. **Terraform が作る初回リビジョンと CI が作るリビジョンは完全一致しない。**
-   Terraform 経路は `tf-view.jsonnet`（射影）、CI 経路は `taskdef.jsonnet`（全体）を使う。
-   view に載せ忘れたフィールドは Terraform 側のリビジョンから欠落する。
-   上記の `networkMode` 問題が実例。**view はタスク定義の全フィールドを
-   網羅するべきで、網羅を担保するテストがあると良い**
-   （例: `taskdef.jsonnet` のキー集合と view のキー集合を比較する jsonnet アサーション）。
+   実際のロール ARN を jsonnet に渡そうとすると、`data "external"` の `program` に
+   リソース参照を書くことになり、data source の読み取りが apply まで遅延する。
+   すると plan で `container_definitions` の中身が見えなくなり、H1 の性質を失う。
+   プレースホルダを渡して Terraform 側で実値を与える現在の形が必要。
+
+3. **`ecs.tf` に属性を書き足す作業は手作業のまま残る。**
+   view の載せ忘れは機械導出で構造的に解消したが、`ecs.tf` の
+   `aws_ecs_task_definition` は属性を一つずつ書いて view から読んでいる。
+   `taskdef.jsonnet` に項目を足しても、対応する属性を書かなければ Terraform 側の
+   リビジョンには入らない。
+
+   ただし影響は限定的で、`ignore_changes = all` のため **既存環境では属性を
+   書いても書かなくても Terraform は何もしない**。差が出るのは新規環境の初回
+   リビジョンだけで、それも CI が最初にデプロイした時点で置き換わる。
+
+   `lifecycle.precondition` で検出する案も検討したが採用しなかった。上記のとおり
+   既存環境では対応しても結果が変わらないのに、全環境の plan を失敗させることに
+   なり、誤警報になるため。
 
 ## 検証していないこと
 
