@@ -21,17 +21,45 @@
 ただし Floci には 2 つの再現性のある忠実性ギャップがあり、それを回避するための
 **Floci 専用の記述が `infra/ecs.tf` に 2 箇所ある**（後述）。実 AWS では不要。
 
-## 使い方
+## 再検証のしかた
+
+必要なもの: Docker / Terraform 1.15.8 / `jsonnet` / AWS CLI v2 / `jq`
 
 ```bash
-docker run -d --name floci -p 4566:4566 \
-  -v /var/run/docker.sock:/var/run/docker.sock -u root floci/floci:latest
+# repository ルートで
+docker compose up -d          # Floci が :4566 で起動する
 
+./ecs-jsonnet/verify.sh       # H1〜H6 を通しで検証 (18 チェック)
+```
+
+`verify.sh` は冪等で、実行のたびに `terraform destroy` と前回のリビジョン掃除から
+始まるので何度でも回せる。全て成功すると `18 passed, 0 failed` で終わる。
+失敗したチェックがある場合は plan / apply の生ログのパスを表示して exit 1 する。
+
+手で触りたい場合:
+
+```bash
 export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=ap-northeast-1
 
-terraform -chdir=infra init
-terraform -chdir=infra apply -auto-approve
+terraform -chdir=ecs-jsonnet/infra init
+terraform -chdir=ecs-jsonnet/infra apply -auto-approve
+terraform -chdir=ecs-jsonnet/infra destroy -auto-approve   # 後片付け
 ```
+
+state はこのディレクトリ配下のローカルファイル。`domain/` と違い S3 backend は
+使っていない（検証を自己完結させるため）。
+
+### `docker-compose.yml` について
+
+この検証に合わせて compose を LocalStack から Floci に差し替えてある。
+Floci は LocalStack 互換のポート (:4566)・ヘルスエンドポイント (`/_localstack/health`)・
+init hook ディレクトリ (`/etc/localstack/init/ready.d`) を持つが、
+**イメージに `awslocal` / `aws` / `python3` が入っていない**（`bash` と `curl` のみ）。
+そのため `docker/floci/init/ready/01_init_for_terraform.sh` は AWS CLI ではなく
+curl で生の API を叩く形に書き換えてある（Floci は署名を検証しない）。
+
+既存の `domain/` スタックは **無変更で Floci 上に apply できる**ことを確認済み。
+S3 backend の `s3.localhost.localstack.cloud` も、Floci が同名を解決するため動く。
 
 ## Phase 0: Floci の API 対応状況
 
