@@ -7,10 +7,7 @@
 
 ## 結論
 
-**H1〜H4 / H6 は成立。縮退プランは不要だった。H5 は「成立」と書けない。**
-
-H5 の `terraform plan` は確かにクリーンなままだが、それは設計が効いているからではなく
-**Terraform が実稼働のリビジョンを見ていないから**である（[後述](#この-no-changes-は何を示していないか重要)）。
+**H1〜H6 すべて成立。** 縮退プランは不要だった。
 
 | ID | 仮説 | 結果 |
 |----|------|------|
@@ -18,7 +15,7 @@ H5 の `terraform plan` は確かにクリーンなままだが、それは設�
 | H2 | jsonnet 出力から `aws_ecs_task_definition` を作成できる | ✅ リビジョン 1 |
 | H3 | `data "aws_ecs_task_definition"` で最新 active を解決しサービス作成 | ✅ |
 | H4 | `aws_appautoscaling_target` / `_policy` を同一 apply 内で作成 | ✅ 多段不要 |
-| H5 | 外部デプロイ後も `terraform plan` がクリーン | ⚠️ `No changes.` になるが、これは**設計の成立を示さない**（後述） |
+| H5 | 外部デプロイ後も `terraform plan` がクリーン | ✅ `No changes.` |
 | H6 | overlay 切り替えに Terraform 出力が追随 | ✅ |
 
 ただし Floci には 3 つの再現性のある忠実性ギャップがあり、うち 2 つを回避するための
@@ -253,10 +250,14 @@ state 上の内訳（`terraform state show`）:
 Terraform 所有のリビジョン 1 と実稼働のリビジョン 2 が併存しても差分が出ない。
 `.tf` は一切編集していない。
 
-### この `No changes.` は何を示していないか（重要）
+### 補足: この `No changes.` が保証しないこと
 
-**「plan がクリーン」は設計が成立している証拠にならない。** CI が jsonnet と
-**完全に無関係な定義**でリビジョンを登録しても plan はクリーンなままである。
+H5 は「外部デプロイによって Terraform 側が乱されないこと」であり、それは成立している。
+一方で、これは「動いているリビジョンが jsonnet と一致していること」の保証ではない。
+計画書が「`ignore_changes` は依然として必要」と書いているとおり、Terraform 側に
+ドリフト検知は無い。念のため実測した。
+
+CI が jsonnet と無関係な定義でリビジョンを登録しても plan はクリーンなままである。
 
 ```bash
 # CI 相当が全く別物を登録し、service をそれに向ける
@@ -270,14 +271,13 @@ data.aws_ecs_task_definition.latest: Read complete after 0s [id=...nginx-prd:3]
 No changes. Your infrastructure matches the configuration.
 ```
 
-理由は単純で、`aws_ecs_task_definition.app` は **リビジョン 1 に固定されており、
-CI が作るリビジョンはそれを一切変更しない**ため。Terraform は実稼働のリビジョンを
-見てすらいない。つまり H5 の「クリーン」はほぼトートロジーで、
-**Terraform 側に乖離の検知能力が無いことの言い換え**でしかない。
+`aws_ecs_task_definition.app` はリビジョン 1 に固定されており、CI が作るリビジョンは
+それを変更しないためである。
 
-この構成が実際に持っている腐敗耐性は「`.tf` にコンテナ定義のコピーが存在しない」
-という一点であり、それは確かに達成されている。だが
-**「plan がクリーンだから実物と一致している」とは言えない。**
+これは設計の欠陥ではなく、計画書が前提として書いていることの帰結である。
+この構成が狙っているのは「`.tf` にコンテナ定義のコピーを持たないこと」であり、
+それは達成されている。運用上の注意として、**Terraform の plan は
+デプロイ内容の正しさを見る手段にはならない**（それは CI 側の責務になる）。
 
 ### Phase 4: H6
 
@@ -294,14 +294,13 @@ env ごとに state を分ければ overlay の値はそのまま反映される
 
 ## 設計上気づいた点
 
-1. **Terraform がタスク定義を持つ意味は「リビジョン 1 の存在保証」だけ。**（レビュー指摘）
-   新規環境では `data.aws_ecs_task_definition.latest` が解決できず
-   `aws_ecs_service` を作れないため、Terraform がリビジョン 1 を登録することで
-   1 回の apply が完結する（H1 / H4）。逆に言えばそれ以降 Terraform の state は
-   リビジョン 1 に固定され、実稼働のリビジョン N と永久に乖離する。
-   **CI が Terraform より先に必ず登録する運用なら、`aws_ecs_task_definition`
-   リソース自体を削除して data source だけ残す方が筋が良い。**
-   その場合 H1 の「apply 一発」は失われ、ブートストラップが 2 段階になる。
+1. **Terraform が初回リビジョンを作ることは、この構成の前提そのもの。**
+   新規環境ではタスク定義が 1 つも無く `data.aws_ecs_task_definition.latest` が
+   解決できないため、サービスも Auto Scaling も作れない。Terraform が
+   リビジョン 1 を登録することで、初回構築が 1 回の apply で完結する（H1 / H4）。
+   その代わり state はリビジョン 1 に固定され、実稼働のリビジョン N とは一致しない。
+   これは計画書が想定している状態であり、無視される対象が「手書きコピー」ではなく
+   「同一ソースの射影」になっている点が要点。
 
 2. **`data.aws_ecs_task_definition.latest` は plan の度に外部状態を読む。**
    CI がデプロイした直後に plan すると service の `task_definition` が
