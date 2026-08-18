@@ -302,19 +302,13 @@ env ごとに state を分ければ overlay の値はそのまま反映される
    これは計画書が想定している状態であり、無視される対象が「手書きコピー」ではなく
    「同一ソースの射影」になっている点が要点。
 
-2. **`data.aws_ecs_task_definition.latest` は plan の度に外部状態を読む。**
-   CI がデプロイした直後に plan すると service の `task_definition` が
-   毎回新しい ARN に更新される。`ignore_changes = [task_definition]` があるので
-   差分にはならないが、**`ignore_changes` を外すと plan の結果が
-   「いつ実行したか」に依存する**（非決定的な plan）。この 2 つはセットで必要。
-
-3. **`execRoleArn` プレースホルダは今の `tf-view.jsonnet` では露出しない。**
+2. **`execRoleArn` プレースホルダは今の `tf-view.jsonnet` では露出しない。**
    `executionRoleArn` を view に含めていないため、`--ext-str execRoleArn=placeholder`
    の値は Terraform 側に一切漏れない。もし将来 view に含めるなら、
    リソース参照を渡すことになり `data "external"` の読み取りが apply まで遅延し、
    H1 の「plan で中身が見える」性質を失う。含めないままが良い。
 
-4. **Terraform が作る初回リビジョンと CI が作るリビジョンは完全一致しない。**
+3. **Terraform が作る初回リビジョンと CI が作るリビジョンは完全一致しない。**
    Terraform 経路は `tf-view.jsonnet`（射影）、CI 経路は `taskdef.jsonnet`（全体）を使う。
    view に載せ忘れたフィールドは Terraform 側のリビジョンから欠落する。
    上記の `networkMode` 問題が実例。**view はタスク定義の全フィールドを
