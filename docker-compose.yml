@@ -1,12 +1,21 @@
-version: "3"
 services:
-  localstack:
-    image: localstack/localstack:4.14.0
+  floci:
+    image: floci/floci:1.7.0
     ports:
       - "4566:4566"
     environment:
+      - FLOCI_DEFAULT_REGION=ap-northeast-1
+      - FLOCI_STORAGE_MODE=persistent
       - DOCKER_HOST=unix:///var/run/docker.sock
     volumes:
-      - "./docker/localstack/volume:/var/lib/localstack"
-      - "./docker/localstack/init/ready:/etc/localstack/init/ready.d"
+      - "floci-data:/app/data"
+      - "./docker/floci/init/ready:/etc/floci/init/ready.d"
       - "/var/run/docker.sock:/var/run/docker.sock"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_floci/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  floci-data:
