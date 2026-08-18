@@ -29,11 +29,11 @@
 # repository ルートで
 docker compose up -d          # Floci が :4566 で起動する
 
-./ecs-jsonnet/verify.sh       # H1〜H6 を通しで検証 (18 チェック)
+./ecs-jsonnet/verify.sh       # H1〜H6 を通しで検証
 ```
 
 `verify.sh` は冪等で、実行のたびに `terraform destroy` と前回のリビジョン掃除から
-始まるので何度でも回せる。全て成功すると `18 passed, 0 failed` で終わる。
+始まるので何度でも回せる。全て成功すると `0 failed` で終わる。
 失敗したチェックがある場合は plan / apply の生ログのパスを表示して exit 1 する。
 
 手で触りたい場合:
@@ -118,9 +118,8 @@ apply 直後の plan が `Plan: 1 to add, 0 to change, 1 to destroy`（強制再
 **初回 apply 直後の plan からタスク定義が再作成対象になる**（`Plan: 1 to add, 1 to destroy`）。
 
 これは H5 の測定にとって重要な限界で、正直に書いておく。
-`ignore_changes = [container_definitions]` は本来「CI がリビジョンを持つ」という
-設計意図のために置いているものだが、**Floci 上ではこのエミュレータのバグも同時に
-隠してしまう**。したがって「H5 の plan がクリーンなのは設計が成立しているからだ」と
+`ignore_changes = all` は本来「CI がリビジョンを持つ」という設計意図のために
+置いているものだが、**Floci 上ではこのエミュレータのバグも同時に隠してしまう**。したがって「H5 の plan がクリーンなのは設計が成立しているからだ」と
 Floci だけで言い切ることはできない。実 AWS での確認が必要。
 
 ## `tf-view.jsonnet` に必要だった調整
