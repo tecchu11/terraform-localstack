@@ -4,13 +4,11 @@ services:
     ports:
       - "4566:4566"
     environment:
-      # Floci はデフォルト us-east-1 なので、この repository の Terraform に合わせる
       - FLOCI_DEFAULT_REGION=ap-northeast-1
-      # メモリのみ（デフォルト）だと再起動で state backend ごと消える
       - FLOCI_STORAGE_MODE=persistent
       - DOCKER_HOST=unix:///var/run/docker.sock
     volumes:
-      - "./docker/floci/volume:/app/data"
+      - "floci-data:/app/data"
       - "./docker/floci/init/ready:/etc/floci/init/ready.d"
       - "/var/run/docker.sock:/var/run/docker.sock"
     healthcheck:
@@ -18,3 +16,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+volumes:
+  floci-data:

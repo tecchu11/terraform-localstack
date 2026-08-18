@@ -49,18 +49,6 @@ terraform -chdir=ecs-jsonnet/infra destroy -auto-approve   # 後片付け
 state はこのディレクトリ配下のローカルファイル。`domain/` と違い S3 backend は
 使っていない（検証を自己完結させるため）。
 
-### `docker-compose.yml` について
-
-この検証に合わせて compose を LocalStack から Floci に差し替えてある。
-Floci は LocalStack 互換のポート (:4566)・ヘルスエンドポイント (`/_localstack/health`)・
-init hook ディレクトリ (`/etc/localstack/init/ready.d`) を持つが、
-**イメージに `awslocal` / `aws` / `python3` が入っていない**（`bash` と `curl` のみ）。
-そのため `docker/floci/init/ready/01_init_for_terraform.sh` は AWS CLI ではなく
-curl で生の API を叩く形に書き換えてある（Floci は署名を検証しない）。
-
-既存の `domain/` スタックは **無変更で Floci 上に apply できる**ことを確認済み。
-S3 backend の `s3.localhost.localstack.cloud` も、Floci が同名を解決するため動く。
-
 ## Phase 0: Floci の API 対応状況
 
 計画書のプローブは **6 個すべて成功**。追加で確認した周辺 API も全て成功した。

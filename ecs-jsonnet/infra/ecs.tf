@@ -41,7 +41,6 @@ resource "aws_ecs_task_definition" "app" {
   execution_role_arn       = aws_iam_role.task_execution.arn
   container_definitions    = data.external.taskdef.result.containerDefinitions
 
-  # 2 回目以降のリビジョン更新は CI が行う
   lifecycle {
     ignore_changes = [container_definitions, cpu, memory]
   }
@@ -49,17 +48,14 @@ resource "aws_ecs_task_definition" "app" {
   depends_on = [aws_cloudwatch_log_group.nginx]
 }
 
-# Terraform が作ったか CI が作ったかを問わず最新の active リビジョンを取る
 data "aws_ecs_task_definition" "latest" {
   task_definition = aws_ecs_task_definition.app.family
   depends_on      = [aws_ecs_task_definition.app]
 }
 
 resource "aws_ecs_service" "app" {
-  name    = "nginx"
-  cluster = aws_ecs_cluster.main.id
-  # Floci 互換: 完全な ARN を渡す。family:revision 形式だと Floci が
-  # DescribeServices でその文字列をそのまま返し、provider の ARN パーサが panic する
+  name            = "nginx"
+  cluster         = aws_ecs_cluster.main.id
   task_definition = data.aws_ecs_task_definition.latest.arn
   desired_count   = 1
   launch_type     = "FARGATE"
@@ -85,7 +81,6 @@ resource "aws_ecs_service" "app" {
   }
 }
 
-# 多段構築が不要であることの確認対象
 resource "aws_appautoscaling_target" "app" {
   service_namespace  = "ecs"
   scalable_dimension = "ecs:service:DesiredCount"
