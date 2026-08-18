@@ -7,7 +7,10 @@
 
 ## 結論
 
-**H1〜H6 すべて成立。** 縮退プランは不要だった。
+**H1〜H4 / H6 は成立。縮退プランは不要だった。H5 は「成立」と書けない。**
+
+H5 の `terraform plan` は確かにクリーンなままだが、それは設計が効いているからではなく
+**Terraform が実稼働のリビジョンを見ていないから**である（[後述](#この-no-changes-は何を示していないか重要)）。
 
 | ID | 仮説 | 結果 |
 |----|------|------|
@@ -15,7 +18,7 @@
 | H2 | jsonnet 出力から `aws_ecs_task_definition` を作成できる | ✅ リビジョン 1 |
 | H3 | `data "aws_ecs_task_definition"` で最新 active を解決しサービス作成 | ✅ |
 | H4 | `aws_appautoscaling_target` / `_policy` を同一 apply 内で作成 | ✅ 多段不要 |
-| H5 | 外部デプロイ後も `terraform plan` がクリーン | ✅ `No changes.` |
+| H5 | 外部デプロイ後も `terraform plan` がクリーン | ⚠️ `No changes.` になるが、これは**設計の成立を示さない**（後述） |
 | H6 | overlay 切り替えに Terraform 出力が追随 | ✅ |
 
 ただし Floci には 3 つの再現性のある忠実性ギャップがあり、うち 2 つを回避するための
@@ -250,33 +253,48 @@ state 上の内訳（`terraform state show`）:
 Terraform 所有のリビジョン 1 と実稼働のリビジョン 2 が併存しても差分が出ない。
 `.tf` は一切編集していない。
 
-**追加検証**: `overlay/prd.libsonnet` の tag を書き換えて plan を実行しても
-`No changes.` のまま（`ignore_changes` が効いている）。
-設計意図どおりだが、裏を返すと **jsonnet の変更を Terraform は検知しない**。
-リビジョンを進めるのは CI の責務であり、Terraform 側にドリフト検知は無い。
+### この `No changes.` は何を示していないか（重要）
+
+**「plan がクリーン」は設計が成立している証拠にならない。** CI が jsonnet と
+**完全に無関係な定義**でリビジョンを登録しても plan はクリーンなままである。
+
+```bash
+# CI 相当が全く別物を登録し、service をそれに向ける
+#   image: httpd:2.4-TOTALLY-DIFFERENT / cpu: 4096 / 想定外の sidecar 追加
+$ aws ecs register-task-definition --cli-input-json file://divergent.json
+arn:aws:ecs:...:task-definition/nginx-prd:3
+$ aws ecs update-service --cluster app-prd --service nginx --task-definition nginx-prd:3
+
+$ terraform plan
+data.aws_ecs_task_definition.latest: Read complete after 0s [id=...nginx-prd:3]
+No changes. Your infrastructure matches the configuration.
+```
+
+理由は単純で、`aws_ecs_task_definition.app` は **リビジョン 1 に固定されており、
+CI が作るリビジョンはそれを一切変更しない**ため。Terraform は実稼働のリビジョンを
+見てすらいない。つまり H5 の「クリーン」はほぼトートロジーで、
+**Terraform 側に乖離の検知能力が無いことの言い換え**でしかない。
+
+この構成が実際に持っている腐敗耐性は「`.tf` にコンテナ定義のコピーが存在しない」
+という一点であり、それは確かに達成されている。だが
+**「plan がクリーンだから実物と一致している」とは言えない。**
 
 ### Phase 4: H6
 
-```
-$ terraform plan -var env=dev
-~ image    = "nginx:1.27.4" -> "nginx:latest"
-~ cpu      = "512"  -> "256"
-~ memory   = "1024" -> "512"
-~ family   = "nginx-prd"     -> "nginx-dev"     # forces replacement
-~ name     = "app-prd"       -> "app-dev"       # forces replacement (cluster)
-~ name     = "/ecs/nginx-prd"-> "/ecs/nginx-dev"# forces replacement (log group)
-~ name     = "nginx-prd-exec"-> "nginx-dev-exec"# forces replacement (iam role)
-~ resource_id = "service/app-prd/nginx" -> "service/app-dev/nginx" # forces replacement
-- name = "NGINX_WORKER_PROCESSES"   （prd 限定の環境変数が消える）
-Plan: 7 to add, 0 to change, 7 to destroy.
-```
+`ignore_changes = all` は「更新」にしか効かず「作成」には効かないので、
+env ごとに state を分ければ overlay の値はそのまま反映される（実運用と同じ形）。
+`verify.sh` は `dev` workspace で apply して、出来たタスク定義を直接確認している。
 
-`cpu` / `memory` は `ignore_changes` に入れていない。Floci はこの 2 つは
-正しく round-trip するため、入れなくても plan はクリーンなままだった。
+| | prd | dev |
+|---|---|---|
+| cpu / memory | 512 / 1024 | 256 / 512 |
+| image | `nginx:1.27.4` | `nginx:latest` |
+| `NGINX_WORKER_PROCESSES` | あり | 無し |
+| cluster | `app-prd` | `app-dev` |
 
 ## 設計上気づいた点
 
-1. **Terraform がタスク定義を持つ意味は「リビジョン 1 の存在保証」だけ。**
+1. **Terraform がタスク定義を持つ意味は「リビジョン 1 の存在保証」だけ。**（レビュー指摘）
    新規環境では `data.aws_ecs_task_definition.latest` が解決できず
    `aws_ecs_service` を作れないため、Terraform がリビジョン 1 を登録することで
    1 回の apply が完結する（H1 / H4）。逆に言えばそれ以降 Terraform の state は

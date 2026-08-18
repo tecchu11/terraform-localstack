@@ -42,14 +42,14 @@ resource "aws_ecs_task_definition" "app" {
   container_definitions    = data.external.taskdef.result.containerDefinitions
 
   lifecycle {
-    ignore_changes = [container_definitions]
+    ignore_changes = all
   }
 
   depends_on = [aws_cloudwatch_log_group.nginx]
 }
 
 data "aws_ecs_task_definition" "latest" {
-  task_definition = aws_ecs_task_definition.app.family
+  task_definition = data.external.taskdef.result.family
   depends_on      = [aws_ecs_task_definition.app]
 }
 

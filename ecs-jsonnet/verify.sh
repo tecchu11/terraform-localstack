@@ -62,6 +62,9 @@ if [ -f "${INFRA}/terraform.tfstate" ]; then
   "$TF" -chdir="$INFRA" destroy -auto-approve -no-color >/dev/null 2>&1
 fi
 rm -f "${INFRA}/terraform.tfstate" "${INFRA}/terraform.tfstate.backup"
+"$TF" -chdir="$INFRA" workspace select default >/dev/null 2>&1
+rm -rf "${INFRA}/terraform.tfstate.d"
+$AWS_CLI ecs delete-service --cluster app-dev --service nginx --force >/dev/null 2>&1
 
 # サービスが残っていると再作成できないので念のため掃除
 $AWS_CLI ecs delete-service --cluster app-prd --service nginx --force >/dev/null 2>&1
@@ -157,28 +160,52 @@ check "H5" "外部デプロイ後の terraform plan が 'No changes'" $?
 grep -q "data.aws_ecs_task_definition.latest: Read complete.*nginx-prd:${NEW_REV}" "${WORK}/plan3.txt"
 check "H5" "data.aws_ecs_task_definition.latest がリビジョン ${NEW_REV} を解決する" $?
 
-# jsonnet を書き換えても plan は汚れない (ignore_changes が効いている)
+# jsonnet のどの項目を書き換えても Terraform は新リビジョンを作らない
+# (ignore_changes = all)。container_definitions だけ無視していた頃は
+# networkMode の変更で再作成 plan になっていた。
 cp "${SCRIPT_DIR}/overlay/prd.libsonnet" "${WORK}/prd.bak"
-sed -i.bak "s/tag: '1.27.4'/tag: '1.27.5'/" "${SCRIPT_DIR}/overlay/prd.libsonnet"
+sed -i "s/tag: '1.27.4'/tag: '1.27.5'/" "${SCRIPT_DIR}/overlay/prd.libsonnet"
 "$TF" -chdir="$INFRA" plan -no-color 2>&1 | grep -q 'No changes'
 result=$?
 cp "${WORK}/prd.bak" "${SCRIPT_DIR}/overlay/prd.libsonnet"
-rm -f "${SCRIPT_DIR}/overlay/prd.libsonnet.bak"
-check "H5" "jsonnet ソースを書き換えても plan がクリーン" $result
+check "H5" "jsonnet の container を書き換えても plan がクリーン" $result
+
+cp "${SCRIPT_DIR}/base.libsonnet" "${WORK}/base.bak"
+sed -i "s/networkMode: 'awsvpc'/networkMode: 'bridge'/" "${SCRIPT_DIR}/base.libsonnet"
+"$TF" -chdir="$INFRA" plan -no-color 2>&1 | grep -q 'No changes'
+result=$?
+cp "${WORK}/base.bak" "${SCRIPT_DIR}/base.libsonnet"
+check "H5" "jsonnet の networkMode を書き換えても plan がクリーン" $result
 
 # --------------------------------------------- Phase 4: overlay 切替 (H6)
+# ignore_changes = all は「更新」にしか効かず「作成」には効かないので、
+# env ごとに state を分ければ overlay の値がそのまま反映される。
+# これは実運用 (dev / prd で state を分ける) と同じ形。
 section "Phase 4: overlay 切り替え (H6)"
-"$TF" -chdir="$INFRA" plan -var env=dev -no-color > "${WORK}/plan4.txt" 2>&1
-grep -q '"512" -> "256"' "${WORK}/plan4.txt" && grep -q '"1024" -> "512"' "${WORK}/plan4.txt"
-check "H6" "cpu / memory が dev の値に変わる" $?
+"$TF" -chdir="$INFRA" workspace new dev >/dev/null 2>&1 || "$TF" -chdir="$INFRA" workspace select dev >/dev/null 2>&1
+"$TF" -chdir="$INFRA" apply -auto-approve -var env=dev -no-color > "${WORK}/apply-dev.txt" 2>&1
+grep -q 'Apply complete' "${WORK}/apply-dev.txt"
+check "H6" "env=dev を別 state で apply できる" $?
 
-grep -q '"nginx:1.27.4" -> "nginx:latest"' "${WORK}/plan4.txt"
-check "H6" "image タグが dev の値に変わる" $?
+DEV_TD="$($AWS_CLI ecs describe-task-definition --task-definition nginx-dev 2>/dev/null)"
 
-grep -q '"nginx-prd" -> "nginx-dev"' "${WORK}/plan4.txt" &&
-  grep -q '"app-prd" -> "app-dev"' "${WORK}/plan4.txt" &&
-  grep -q '"/ecs/nginx-prd" -> "/ecs/nginx-dev"' "${WORK}/plan4.txt"
-check "H6" "family / cluster / log group 名が -dev に変わる" $?
+[ "$(echo "$DEV_TD" | jq -r '.taskDefinition.cpu')" = "256" ] &&
+  [ "$(echo "$DEV_TD" | jq -r '.taskDefinition.memory')" = "512" ]
+check "H6" "dev のタスク定義が cpu=256 / memory=512 (prd は 512 / 1024)" $?
+
+[ "$(echo "$DEV_TD" | jq -r '.taskDefinition.containerDefinitions[0].image')" = "nginx:latest" ]
+check "H6" "dev のタスク定義の image が nginx:latest (prd は 1.27.4)" $?
+
+echo "$DEV_TD" | jq -e '[.taskDefinition.containerDefinitions[0].environment[].name]
+                        | (index("ENV") != null) and (index("NGINX_WORKER_PROCESSES") == null)' >/dev/null
+check "H6" "prd 限定の環境変数 NGINX_WORKER_PROCESSES が dev には無い" $?
+
+$AWS_CLI ecs describe-clusters --clusters app-dev 2>/dev/null \
+  | jq -e '.clusters[0].status == "ACTIVE"' >/dev/null
+check "H6" "cluster が app-dev で作られる" $?
+
+"$TF" -chdir="$INFRA" destroy -auto-approve -var env=dev -no-color >/dev/null 2>&1
+"$TF" -chdir="$INFRA" workspace select default >/dev/null 2>&1
 
 # --------------------------------------------------------------- まとめ
 section "結果"
